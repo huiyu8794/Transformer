@@ -34,20 +34,13 @@ def imshow_np(img, filename, image_dir=""):
     plt.close()
 
 
-def reshape_transform(tensor, height=14, width=14): 
-    # tensor.shape: [1, 197, 768]
-    result = tensor[:, :, :].reshape(tensor.size(0), height, width, tensor.size(2))
-    # result.shape: [1, 14, 14, 768]
-
-    # Bring the channels to the first dimension, like in CNNs.
-    result = result.transpose(2, 3).transpose(1, 2)
-    # result.shape: [1, 768, 14, 14]
-    return result
-
 gpu_id = 'cuda:0'
 
 # replay casia Oulu MSU
 dataset = "MSU"
+target_category = 0
+model_name = 'cdsa_mcdsa'
+model_path = '/shared/huiyu8794/Transformer/test_O_' + model_name + '_patch16/FASNet-400.tar'
 
 livedata = np.load('/shared/alwayswithme/data/domain-generalization/' + dataset + '_images_live.npy')
 len_livedata = len(livedata)
@@ -57,7 +50,7 @@ len_spoofdata = len(spoofdata)
 total_data = np.concatenate((livedata, spoofdata), axis=0)
 total_data = torch.tensor(np.transpose(total_data, (0, 3, 1, 2)))
 
-fake_label = np.zeros((len_spoofdata), dtype=np.int64) 
+fake_label = np.zeros((len_spoofdata), dtype=np.int64)
 real_label = np.ones((len_livedata), dtype=np.int64)
 
 real_fake_label = np.concatenate((real_label, fake_label), axis=0) 
@@ -70,15 +63,29 @@ trainloader_D = torch.utils.data.DataLoader(trainset_D, batch_size=batch_size, s
 
 C_model = vit_base_patch16_224(pretrained=True).to(gpu_id)
 
-model_path = "/shared/huiyu8794/Transformer/test_O/FASNet-162.tar" # load your pretrained model
+# target_layers = [C_model.patch_embed]
+target_layers = [C_model.blocks[-1]]  # Specific layer of pretrained model
 
-target_layers = [C_model.patch_embed]  # Specific layer of pretrained model
-
-C_model.load_state_dict(torch.load(model_path, map_location=gpu_id)) 
+C_model.load_state_dict(torch.load(model_path, map_location=gpu_id))
 C_model.eval()
 
+
+def reshape_transform(tensor, height=14, width=14): 
+    # tensor.shape: [1, 197, 768]
+    if tensor.shape[1] == height*width:
+        result = tensor[:, :, :].reshape(tensor.size(0), height, width, tensor.size(2))
+    else:
+        result = tensor[:, 1:, :].reshape(tensor.size(0), height, width, tensor.size(2))
+    # result.shape: [1, 14, 14, 768]
+
+    # Bring the channels to the first dimension, like in CNNs.
+    result = result.transpose(2, 3).transpose(1, 2)
+    # result.shape: [1, 768, 14, 14]
+    return result
+
 # Transformer need "reshape_transform" argument, CNN not
-cam = GradCAM(model=C_model, target_layers=target_layers, reshape_transform=reshape_transform, use_cuda=True)
+cam = ScoreCAM(model=C_model, target_layers=target_layers, reshape_transform=reshape_transform, use_cuda=True)
+
 
 for i, data in enumerate(trainloader_D, 0):
     print(str("{0:04d}".format(i)))
@@ -88,7 +95,7 @@ for i, data in enumerate(trainloader_D, 0):
     
     Resize = T.Resize([224,224])
     image = Resize(image)
-    grayscale_cam = cam(input_tensor=image)
+    grayscale_cam = cam(input_tensor=image, eigen_smooth=True, target_category=target_category)
 
     grayscale_cam = grayscale_cam[0, :] 
     grayscale_cam = cv2.medianBlur(grayscale_cam, 5) 
@@ -98,11 +105,10 @@ for i, data in enumerate(trainloader_D, 0):
     cam_image = cv2.cvtColor(cam_image, cv2.COLOR_RGB2BGR)
     
     # Save original image
-    imshow_np(np.transpose(NormalizeData(image[0, :, :, :].cpu().detach().numpy()), (1, 2, 0)),
-              str("{0:04d}".format(i)) + "_" + str(labels[0].item()), image_dir)
+    # imshow_np(np.transpose(NormalizeData(image[0, :, :, :].cpu().detach().numpy()), (1, 2, 0)),
+    #           str("{0:04d}".format(i)) + "_" + str(labels[0].item()), image_dir)
 
-    save_file = "/home/huiyu8794/Transformer/activation_image/" + dataset +"_LayerCAM"+ "/" 
+    save_file = "/home/huiyu8794/Transformer/" + model_name + "/" + dataset + "_" + str(target_category) + "/"
     mkdir(save_file)
-    
-    # Save original image + cam image
-    cv2.imwrite(save_file + str("{0:04d}".format(i)) + "_cam" + ".jpg", cam_image)
+
+    cv2.imwrite(save_file + str("{0:03d}".format(i)) +"_"+ str(labels[0].item()) +".jpg", cam_image)
